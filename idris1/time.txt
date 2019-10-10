@@ -1,0 +1,20 @@
+fibList
+
+real	0m0.173s
+user	0m0.150s
+sys	0m0.018s
+fibTailRec
+
+real	0m0.015s
+user	0m0.007s
+sys	0m0.006s
+fibVectProof
+
+real	0m0.146s
+user	0m0.125s
+sys	0m0.017s
+sieve
+
+real	0m0.012s
+user	0m0.005s
+sys	0m0.006s
