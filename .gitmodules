@@ -1,0 +1,3 @@
+[submodule "idris2-compiler"]
+	path = Idris2
+	url = https://github.com/edwinb/Idris2.git
