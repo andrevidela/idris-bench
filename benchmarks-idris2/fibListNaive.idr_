@@ -1,6 +1,0 @@
-
-firstNFib : Nat -> List Nat
-firstNFib n = map fib [0..n]
-
-main : IO ()
-main = printLn $ firstNFib 40
