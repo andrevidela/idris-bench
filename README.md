@@ -37,3 +37,11 @@ in the `pathological_compilation` folder.
 ```
 idris-bench -c experimental pathological_compilation
 ```
+
+## Room for improvements
+
+- [ ] run over n times 
+- [ ] save which version of the compiler is used in the results
+- [ ] better format results (csv?)
+- [ ] select a file output for results instead of using `results.txt` all the time
+- [ ] compare performance between two commits (?)
