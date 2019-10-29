@@ -175,11 +175,11 @@ BenchResults = Tree (String, Clock)
 
 
 compileIdris : String -> BenchmarkM ()
-compileIdris commit = do 0 <- system "idris --clean idris2.ipkg"
+compileIdris commit = do 0 <- system "make clean"
                            | _ => returnErr "could not clean"
                          0 <- system $ "git checkout " ++ commit
                            | _ => returnErr "could not checkout"
-                         0 <- system "idris --install idris2.ipkg"
+                         0 <- system "make install-exec"
                            | _ => returnErr "could not install"
                          returnVal ()
 
@@ -308,10 +308,11 @@ main = do [_, mode, idris, path] <- getArgs
           Right idrisPath <- the (BenchmarkM String) $ case mode of
                 "-p"       => returnVal idris
                 "--path"   => returnVal idris
-                "-c"       => returnErr "Unsupported build from commit"
-                "--commit" => returnErr "Unsupported build from commit"
+                "-c"       => getPathToBinary idris
+                "--commit" => getPathToBinary idris
                 v          => returnErr ("unknown flag" ++ v)
             | Left err => do putStrLn (show err) ; exitFailure
+          putStrLn idrisPath
           Right results <- if !(isDirectory path)
                                then benchmarkDirectory idrisPath path
                                else benchmarkFile idrisPath path
