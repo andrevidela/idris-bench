@@ -19,3 +19,21 @@ idris-bench ((-p | --path PATH) | (-c | --commit COMMIT)) FOLDER
 - `FOLDER` is the folder to use for benchmarks
 
 the results are printed in the `results.txt` file
+
+### Examples
+
+
+The following will use the version of Idris 2 installed in your path and will 
+run all the benchmarks in the `benchmark_idris2/fibonnacci` folder.
+
+```
+idris-bench -p $(which idris2) benchmark_idris2/fibonnacci
+```
+
+
+The following will use the branch `exprimental` and will run all benchmarks
+in the `pathological_compilation` folder.
+
+```
+idris-bench -c experimental pathological_compilation
+```
