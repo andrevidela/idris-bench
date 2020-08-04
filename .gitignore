@@ -1,4 +1,5 @@
 
+.DS_Store
 *.ibc
 *.idr~
 *.ss
@@ -6,3 +7,4 @@
 *.ttm
 *.ttc
 
+build/

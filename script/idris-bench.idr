@@ -2,11 +2,16 @@
 import System
 
 import Data.Vect
+import Data.List
+import Data.Strings
+import Data.Maybe
+import Data.Either
+import System
+import System.Clock
+import System.File
+import System.Directory
 
-defaultIdrisLocation : String
-defaultIdrisLocation = "Idris2/"
-defaultIdrisBinary : String
-defaultIdrisBinary = "Idris2/idris2"
+import CSV
 
 ----------------------------------------------------------------------------------------------------
 -- Program analysis --------------------------------------------------------------------------------
@@ -31,21 +36,15 @@ returnErr = pure . Left . MkError
 returnVal : a -> BenchmarkM a
 returnVal = pure . Right
 
-Show Clock where
-  show (MkClock s n) = show s ++ "s " ++ show n ++ "ns"
-
-sumClock : (lhs, rhs : Clock) -> Clock
-sumClock (MkClock ls ln) (MkClock rs rn) = MkClock (ls + rs) (ln + rn)
-
-clockDiff : Clock -> Clock -> Clock
-clockDiff (MkClock secl nanl) (MkClock secr nanr) = MkClock (secl - secr) (nanl - nanr)
+convertMaybe : Maybe a -> Either BenchError a
+convertMaybe = maybeToEither (MkError "unexepect null value")
 
 ||| given a program that runs in IO, measure the time it takes to run
-measureRunTime : Lazy (IO ()) -> IO Clock
-measureRunTime program = do begin <- clockTime
-                            _ <- program
-                            end <- clockTime
-                            pure $ end `clockDiff` begin
+measureRunTime : Lazy (IO Int) -> IO (Int, Clock Duration)
+measureRunTime program = do begin <- clockTime Process
+                            ret <- program
+                            end <- clockTime Process
+                            pure $ (ret, end `timeDifference` begin)
 
 ----------------------------------------------------------------------------------------------------
 -- Program measurement -----------------------------------------------------------------------------
@@ -53,20 +52,19 @@ measureRunTime program = do begin <- clockTime
 
 ||| Run a program and measure the time it takes
 ||| returns Nothing if the exit code was different than 0
-measureRunTime' : String -> Lazy (IO Int) -> BenchmarkM Clock
+measureRunTime' : String -> Lazy (IO Int) -> BenchmarkM (Clock Duration)
 measureRunTime' progName program = do
-  begin <- clockTime
-  if !(program) /= 0
+  (ret, time) <- measureRunTime program
+  if ret /= 0
      then returnErr $ "program \"" ++ progName ++ "\" did not exit with 0"
-     else do end <- clockTime
-             returnVal (end `clockDiff` begin)
+     else returnVal time
 
-runTime : String -> BenchmarkM Clock
+runTime : String -> BenchmarkM (Clock Duration)
 runTime programName = do
   putStrLn $ "measuring runtime for program " ++ programName
   measureRunTime' programName (system programName)
 
-runPrograms : List String -> BenchmarkM (List (String, Clock))
+runPrograms : List String -> BenchmarkM (List (String, Clock Duration))
 runPrograms [] = returnVal []
 runPrograms (x :: xs) = do Right result <- runTime x
                              | Left _ => returnErr ("failed to run program " ++ x)
@@ -74,6 +72,7 @@ runPrograms (x :: xs) = do Right result <- runTime x
                              | Left (MkError err) => returnErr err
                            returnVal $ (x, result) :: rest
 
+-- Tree for Filesystem
 
 data Tree a = TreeNode a (List (Tree a))
             | TreeLeaf a
@@ -112,9 +111,9 @@ FileSystem = Tree String
 
 isDirectory : String -> IO Bool
 isDirectory path = do
-  Right dir <- dirOpen path
+  Right dir <- openDir path
     | Left _ => pure False
-  dirClose dir
+  closeDir dir
   pure True
 
 ||| Ls with accumulator, uses `dirEntry` to get to the next entry
@@ -129,15 +128,15 @@ lsAcc d files = do Right file <- dirEntry d
     ||| Don't pay attention to files starting with a dot
     notDot : String -> Bool
     notDot "" = True
-    notDot str = strHead str /= '.'
-
+    notDot str = assert_total $ prim__strHead str /= '.'
 
 ||| List all files in a directory
 ls : String -> IO (Either FileError (List String))
-ls name = do Right d <- dirOpen name | Left err => pure (Left err)
+ls name = do Right d <- openDir name | Left err => pure (Left err)
              result <- lsAcc d Nothing
-             dirClose d
+             closeDir d
              pure result
+
 
 ||| like partition : (a -> Bool) -> List a -> (List a, List a) but in a monad
 partitionM : Monad m => (a -> m Bool) -> List a -> m (List a, List a)
@@ -171,45 +170,50 @@ lsRec path@(directory :: ds) = do
 
 ||| Benchmark results with a nice tree structure
 BenchResults : Type
-BenchResults = Tree (String, Clock)
+BenchResults = Tree (String, List (Clock Duration))
 
-
-compileIdris : String -> BenchmarkM ()
-compileIdris commit = do 0 <- system "make clean"
-                           | _ => returnErr "could not clean"
-                         0 <- system $ "git checkout " ++ commit
-                           | _ => returnErr "could not checkout"
-                         0 <- system "make install-exec"
-                           | _ => returnErr "could not install"
-                         returnVal ()
-
-compileFile : (idris, file, dest : String) -> BenchmarkM ()
-compileFile idris file dest = do
-  putStrLn $ "compiling file " ++ file ++ " at destination " ++ dest
-  0 <- system $ idris ++ " " ++ file ++ " -o " ++ dest
+compileFile : (idris, file, name : String) -> BenchmarkM ()
+compileFile idris file name = do
+  putStrLn $ "compile with name: " ++ name
+  putStrLn $ "running idris: "
+  putStrLn $ idris ++ " " ++ file ++ " -o " ++ name
+  0 <- system $ idris ++ " " ++ file ++ " -o " ++ name
     | _ => returnErr (
-          "could not compile file " ++ file ++ " at destination " ++ dest)
+          "could not compile file " ++ file ++ " into binary " ++ name)
   putStrLn "done compiling"
   returnVal  ()
 
 ||| Given an idris path, a file to compile and a destination for it, compile and
 ||| benchmark the file
-compileAndBenchmarkBinary : (idris, file, dest : String) -> BenchmarkM BenchResults
-compileAndBenchmarkBinary idris file dest =
-  do Right () <- compileFile idris file dest
+compileAndBenchmarkBinary : (idris, file, name : String) -> Int -> BenchmarkM BenchResults
+compileAndBenchmarkBinary idris file name repetitions =
+  do putStrLn "compile and benchmark"
+     Right () <- compileFile idris file name
        | Left (MkError err) => returnErr err
-     Right duration <- runTime (dest ++ ".so")
+     let program = "build/exec/" ++ name
+     Right duration <- doubleTraverse (const $ runTime program) [0..repetitions]
        | Left (MkError err) => returnErr err
      returnVal $ TreeLeaf (file, duration)
 
 
+compileIdris : (commit : String) -> BenchmarkM ()
+compileIdris commit = do 0 <- system "make clean"
+                           | _ => returnErr "Could not clean"
+                         0 <- system $ "git checkout " ++ commit
+                           | _ => returnErr "Could not checkout"
+                         0 <- system $ "make all"
+                           | _ => returnErr "Could not compile Idris"
+                         returnVal ()
+
 ||| Get the path to Idris
-getPathToBinary : String -> BenchmarkM String
-getPathToBinary path =
-  do changeDir defaultIdrisLocation
+getPathToBinary : (folder, commit : String) -> BenchmarkM ()
+getPathToBinary folder path =
+  do Just curr <- currentDir
+       | Nothing => returnErr "Could not get current dir"
+     changeDir folder
      compileIdris path
-     changeDir ".."
-     returnVal defaultIdrisBinary
+     changeDir curr
+     returnVal ()
 
 writeBenchFile : BenchResults -> BenchmarkM ()
 writeBenchFile results = do Right file <-  writeFile "results.txt" (show results)
@@ -220,12 +224,6 @@ writeBenchFile results = do Right file <-  writeFile "results.txt" (show results
 removeFileExension : String -> String
 removeFileExension path = pack $ takeWhile (/= '.') $ unpack path
 
-||| Given an Idris path and a file/directory to benchmark execute and write the file
-benchmarkFile : (idris, file : String) -> BenchmarkM BenchResults
-benchmarkFile idris file = do
-  let fileBin = removeFileExension file ++ "_bin"
-  putStrLn $ "benchmarking file " ++ fileBin
-  compileAndBenchmarkBinary idris file fileBin
 
 updateLast : (a -> a) -> Vect n a -> Vect n a
 updateLast f [] = []
@@ -239,25 +237,23 @@ createDir' name = do Right _ <- createDir name
                      putStrLn ("Created directory " ++ name)
                      pure (Right ())
 
-benchmarkTree : String -> Vect n String -> FileSystem -> BenchmarkM BenchResults
-benchmarkTree idris path t@(TreeNode dirName files) = do
-  putStrLn "benchmarking directory:"
-  print t
-  Right () <- createDir' (pathFromVect ((map (++ "_bin") (dirName :: path))))
-    | Left _ => returnErr "fileError"
-  putStrLn $ "about to traverse directory " ++ dirName
-  Right rec <- doubleTraverse (benchmarkTree idris (dirName :: path)) files
-    | Left (MkError err) => returnErr err
-  let totalTime = foldl (foldTree (\c, (_, c') => c `sumClock` c')) (MkClock 0 0) rec
-  returnVal $ TreeNode (dirName, totalTime) rec
-benchmarkTree idris path (TreeLeaf filename)      = do
-  putStrLn $ "benchmarking file " ++ filename
-  putStrLn $ "its full path is " ++ show path
-  let totalPath = (filename :: path)
-  let targetPath =  map (++ "_bin") (removeFileExension filename :: path)
-  putStrLn $ "totalPath " ++ pathFromVect totalPath
-  putStrLn $ "targetPath " ++ pathFromVect targetPath
-  compileAndBenchmarkBinary idris (pathFromVect totalPath) (pathFromVect targetPath)
+parameters (idrisPath : String, reps: Int)
+  benchmarkTree : Vect n String -> FileSystem -> BenchmarkM BenchResults
+  benchmarkTree path t@(TreeNode dirName files) = do
+    putStrLn "benchmarking directory:"
+    print t
+--    Right () <- createDir' (pathFromVect ((map (++ "_bin") (dirName :: path))))
+--      | Left _ => returnErr "fileError"
+    putStrLn $ "about to traverse directory " ++ dirName
+    Right rec <- doubleTraverse (benchmarkTree (dirName :: path)) files
+      | Left (MkError err) => returnErr err
+    returnVal $ TreeNode (dirName, []) rec
+  benchmarkTree path (TreeLeaf filename)      = do
+    putStrLn $ "benchmarking file " ++ filename
+    putStrLn $ "its full path is " ++ show path
+    let totalPath = (filename :: path)
+    putStrLn $ "pathVect is " ++ pathFromVect totalPath
+    compileAndBenchmarkBinary idrisPath (pathFromVect totalPath) (removeFileExension filename ++ "_bin") reps
 
 cleanupfiles : FileSystem -> FileSystem
 cleanupfiles = filterLeaves isIdr
@@ -266,16 +262,76 @@ cleanupfiles = filterLeaves isIdr
     isIdr x = let extension = dropWhile (/= '.') $ unpack x
                in unpack ".idr" == extension
 
-benchmarkDirectory : (idris, root : String) -> BenchmarkM BenchResults
-benchmarkDirectory idris root = do
+benchmarkDirectory : (idris, root : String) -> Int -> BenchmarkM BenchResults
+benchmarkDirectory idris root reps = do
   Right (TreeNode name files) <- lsRec [root]
     | Left _ => returnErr "Filesystem error"
-    | whut => returnErr ("unexpected value: " ++ show whut)
-  Right result <- benchmarkTree idris [] ((TreeNode name files))
+    | Right whut => returnErr ("unexpected value: " ++ show whut)
+  putStrLn $ "Here is the tree : " ++ show files
+  Right result <- benchmarkTree idris reps [] ((TreeNode name files))
     | Left (MkError err) => returnErr err
-  fRemove (name ++ "_bin")
   print result
   returnVal result
+
+data TestOutput = StdOut | FilePath String
+
+-- description of which Idris2 binary to use for testing
+data IdrisBin = IdrisPath String
+              | IdrisCompile
+                  String -- Folder where Idris2 is
+                  String -- commit to use
+
+-- Options that the program needs to operates
+record IdrisOptions where
+  constructor MkOptions
+  idrisTesting : IdrisBin -- the path to the Idris2 binary that we use to compile Idris2
+  -- Either the path to Idris2 that we use for testing OR
+  -- A pair with the path and the commit to use compile a version of idris that will
+  -- run the tests
+  testPath : String -- The directory where the tests are located
+  testResults : TestOutput -- The output for this test suite
+  testCount : Int -- The number of times a test will be run
+
+getIdris2Path : IdrisBin -> BenchmarkM String
+getIdris2Path (IdrisPath path) = returnVal path
+getIdris2Path (IdrisCompile folder commit) = do
+  getPathToBinary folder commit
+  returnVal $ folder ++ "/build/exec/idris2"
+
+toNano : Clock type -> Integer
+toNano (MkClock seconds nanoseconds) =
+  let scale = 1000000000
+   in scale * seconds + nanoseconds
+
+resultsToCSV : List String -> BenchResults -> List (List String)
+resultsToCSV path (TreeNode (p, _) xs) =
+  let rec = traverse (resultsToCSV (p :: path)) xs in concat rec
+resultsToCSV path (TreeLeaf (_, times)) =
+  [ concat path :: map (show . toNano) times ]
+
+-- Given a set of options, run the benchmarks that the options describe
+execBenchmarks : IdrisOptions -> BenchmarkM String
+execBenchmarks opts = do
+  Right idris2Bin <- getIdris2Path opts.idrisTesting
+    | Left err => pure $ Left err
+  Right results <- benchmarkDirectory idris2Bin (opts.testPath) (opts.testCount)
+    | Left err => pure $ Left err
+  returnVal (printCSV $ resultsToCSV [] results)
+
+parseOptions : List String -> BenchmarkM IdrisOptions
+parseOptions ["-p", idrisPath, "-t", testPath, "-o", fileoutput, "-c", count] =
+  returnVal $ MkOptions (IdrisPath idrisPath) (testPath) (FilePath fileoutput) (cast count)
+parseOptions ["-p", idrisPath, "-t", testPath, "--stdout", "-c", count] =
+  returnVal $ MkOptions (IdrisPath idrisPath) (testPath) (StdOut) (cast count)
+parseOptions ["--compile", compilerFolder, commit, "-t", testPath, "-o", output, "-c", count] =
+  returnVal $ MkOptions (IdrisCompile compilerFolder commit) testPath (FilePath output) (cast count)
+parseOptions ["--compile", compilerFolder, commit, "-t", testPath, "--stdout",  "-c", count] =
+  returnVal $ MkOptions (IdrisCompile compilerFolder commit) testPath (StdOut) (cast count)
+parseOptions _ = returnErr "Wrong options"
+
+outputResults : String -> TestOutput -> IO ()
+outputResults output StdOut = putStrLn output
+outputResults output (FilePath path) = map (const ()) $ writeFile path output
 
 ||| Usage:
 ||| idris-bench ((-p | --path PATH) | (-c | --commit COMMIT)) FILE
@@ -303,21 +359,13 @@ benchmarkDirectory idris root = do
 |||     This will compile idris2 at the 1234abcd commit and then compile and run
 |||     all the benchmarks. The binaries will be in benchmarks_bin
 main : IO ()
-main = do [_, mode, idris, path] <- getArgs
-            | _ => putStrLn "Wrong args expected 3"
-          Right idrisPath <- the (BenchmarkM String) $ case mode of
-                "-p"       => returnVal idris
-                "--path"   => returnVal idris
-                "-c"       => getPathToBinary idris
-                "--commit" => getPathToBinary idris
-                v          => returnErr ("unknown flag" ++ v)
-            | Left err => do putStrLn (show err) ; exitFailure
-          putStrLn idrisPath
-          Right results <- if !(isDirectory path)
-                               then benchmarkDirectory idrisPath path
-                               else benchmarkFile idrisPath path
-            | Left err => do putStrLn (show err) ; exitFailure
-          writeBenchFile results
+main = do (_ :: xs) <- getArgs
+            | _ => putStrLn "expected arguments"
+          Right opts <- parseOptions xs
+            | Left (MkError err) => putStrLn err
+          Right csv <- execBenchmarks opts
+            | Left (MkError err) => putStrLn err
+          outputResults csv (opts.testResults)
           exitSuccess
 
 
