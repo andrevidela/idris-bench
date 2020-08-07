@@ -240,19 +240,13 @@ createDir' name = do Right _ <- createDir name
 parameters (idrisPath : String, reps: Int)
   benchmarkTree : Vect n String -> FileSystem -> BenchmarkM BenchResults
   benchmarkTree path t@(TreeNode dirName files) = do
-    putStrLn "benchmarking directory:"
-    print t
---    Right () <- createDir' (pathFromVect ((map (++ "_bin") (dirName :: path))))
---      | Left _ => returnErr "fileError"
     putStrLn $ "about to traverse directory " ++ dirName
     Right rec <- doubleTraverse (benchmarkTree (dirName :: path)) files
       | Left (MkError err) => returnErr err
     returnVal $ TreeNode (dirName, []) rec
   benchmarkTree path (TreeLeaf filename)      = do
-    putStrLn $ "benchmarking file " ++ filename
-    putStrLn $ "its full path is " ++ show path
     let totalPath = (filename :: path)
-    putStrLn $ "pathVect is " ++ pathFromVect totalPath
+    putStrLn $ "benchmarking file : " ++ pathFromVect totalPath
     compileAndBenchmarkBinary idrisPath (pathFromVect totalPath) (removeFileExension filename ++ "_bin") reps
 
 cleanupfiles : FileSystem -> FileSystem
@@ -303,11 +297,11 @@ toNano (MkClock seconds nanoseconds) =
   let scale = 1000000000
    in scale * seconds + nanoseconds
 
-resultsToCSV : List String -> BenchResults -> List (List String)
-resultsToCSV path (TreeNode (p, _) xs) =
-  let rec = traverse (resultsToCSV (p :: path)) xs in concat rec
-resultsToCSV path (TreeLeaf (_, times)) =
-  [ concat path :: map (show . toNano) times ]
+resultsToCSV : BenchResults -> List (List String)
+resultsToCSV (TreeNode (_, _) xs) =
+  let rec = traverse resultsToCSV xs in concat rec
+resultsToCSV (TreeLeaf (p, times)) =
+  [ p :: map (show . toNano) times ]
 
 -- Given a set of options, run the benchmarks that the options describe
 execBenchmarks : IdrisOptions -> BenchmarkM String
@@ -316,7 +310,7 @@ execBenchmarks opts = do
     | Left err => pure $ Left err
   Right results <- benchmarkDirectory idris2Bin (opts.testPath) (opts.testCount)
     | Left err => pure $ Left err
-  returnVal (printCSV $ resultsToCSV [] results)
+  returnVal (printCSV $ resultsToCSV results)
 
 parseOptions : List String -> BenchmarkM IdrisOptions
 parseOptions ["-p", idrisPath, "-t", testPath, "-o", fileoutput, "-c", count] =
