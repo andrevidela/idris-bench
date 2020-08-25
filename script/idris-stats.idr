@@ -42,7 +42,7 @@ graphData mn mx ds (S buckets) =
 
 ||| Parse a row into its name and the data following it
 parseRow : List String -> Maybe (String, List Double)
-parseRow (x :: xs) = map (MkPair x) (traverse (\x => map (/ 100000) (parseDouble x)) xs)
+parseRow (x :: xs) = map (MkPair x) (traverse (\x => map (/ 1000000000) (parseDouble x)) xs)
 parseRow _ = Nothing
 
 partial
@@ -93,6 +93,7 @@ main = do [_, filename] <- getArgs
             | Nothing => putStrLn ("could not parse " ++ filename ++ " as csv")
           let (Just results) = compileResults csv
             | Nothing => putStrLn "could not interpret csv content"
+          putStrLn $ printCSV results
           printGraph csv
           pure ()
 

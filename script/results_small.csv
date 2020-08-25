@@ -1,3 +1,3 @@
-../Idris2_fib_benchmark/fibTestNoMutation.idr,524000,662000,590000,593000,588000,598000,642000,606000,611000,594000,666000
-../Idris2_fib_benchmark/fibTest.idr,581000,701000,586000,618000,670000,572000,563000,604000,649000,603000,562000
-../Idris2_fib_benchmark/fibTailRec.idr,612000,842000,616000,647000,549000,671000,556000,618000,571000,529000,545000
+../Idris2_fib_benchmark/fibTestNoMutation.idr,431615
+../Idris2_fib_benchmark/fibTest.idr,442487
+../Idris2_fib_benchmark/fibTailRec.idr,425006

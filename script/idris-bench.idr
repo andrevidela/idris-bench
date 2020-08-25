@@ -12,6 +12,7 @@ import System.File
 import System.Directory
 
 import CSV
+import CommandLine
 
 ----------------------------------------------------------------------------------------------------
 -- Program analysis --------------------------------------------------------------------------------
@@ -39,16 +40,16 @@ returnVal = pure . Right
 convertMaybe : Maybe a -> Either BenchError a
 convertMaybe = maybeToEither (MkError "unexepect null value")
 
+--------------------------------------------------------------------------
+-- Program measurement                                                  --
+--------------------------------------------------------------------------
+
 ||| given a program that runs in IO, measure the time it takes to run
 measureRunTime : Lazy (IO Int) -> IO (Int, Clock Duration)
 measureRunTime program = do begin <- clockTime Process
                             ret <- program
                             end <- clockTime Process
                             pure $ (ret, end `timeDifference` begin)
-
-----------------------------------------------------------------------------------------------------
--- Program measurement -----------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------
 
 ||| Run a program and measure the time it takes
 ||| returns Nothing if the exit code was different than 0
@@ -64,15 +65,31 @@ runTime programName = do
   putStrLn $ "measuring runtime for program " ++ programName
   measureRunTime' programName (system programName)
 
-runPrograms : List String -> BenchmarkM (List (String, Clock Duration))
-runPrograms [] = returnVal []
-runPrograms (x :: xs) = do Right result <- runTime x
-                             | Left _ => returnErr ("failed to run program " ++ x)
-                           Right rest <- runPrograms xs
-                             | Left (MkError err) => returnErr err
-                           returnVal $ (x, result) :: rest
+realRunTime : String -> BenchmarkM (Clock Duration)
+realRunTime programName = do
+    putStrLn $ "measuring real run time for program " ++ programName
+    -- run and store output in programName.time
+    0 <- system $ programName ++ " | tee " ++ programName ++ ".time"
+      | _ => returnErr "program didn't return with 0"
+    parseRunTime (programName ++ ".time")
+  where
+    parseRunTime : String -> BenchmarkM (Clock Duration)
+    parseRunTime filename = do
+      Right fileContent <- readFile filename
+        | Left err => returnErr (show err)
+      let lines = reverse $ lines fileContent
+      let Just found = find ("elapsed cpu time" `isInfixOf`) lines
+        | _ => returnErr  "could not parse real time"
+      let seconds = dropWhile isSpace $ takeWhile (/= 's') (unpack found)
+      let Just seconds = parseDouble (pack seconds)
+        | _ => returnErr "could not parse seconds"
+      let secs : Integer = cast seconds
+      let nanos : Integer = cast ((seconds - (cast secs)) * 1000000000)
+      returnVal $ MkClock (cast seconds) nanos
 
--- Tree for Filesystem
+----------------------------------------------------------------------------------------------------
+-- Tree for Filesystem                                                                            --
+----------------------------------------------------------------------------------------------------
 
 data Tree a = TreeNode a (List (Tree a))
             | TreeLeaf a
@@ -172,12 +189,13 @@ lsRec path@(directory :: ds) = do
 BenchResults : Type
 BenchResults = Tree (String, List (Clock Duration))
 
-compileFile : (idris, file, name : String) -> BenchmarkM ()
-compileFile idris file name = do
+compileFile : (idris, file, name : String) -> (node : Bool) -> BenchmarkM ()
+compileFile idris file name isNode = do
   putStrLn $ "compile with name: " ++ name
   putStrLn $ "running idris: "
-  putStrLn $ idris ++ " " ++ file ++ " -o " ++ name
-  0 <- system $ idris ++ " " ++ file ++ " -o " ++ name
+  let nodecg = if isNode then "--cg node" else ""
+  putStrLn $ idris ++ " " ++ file ++ " -o " ++ name ++ " " ++ nodecg
+  0 <- system $ idris ++ " " ++ file ++ " -o " ++ name ++ " " ++ nodecg
     | _ => returnErr (
           "could not compile file " ++ file ++ " into binary " ++ name)
   putStrLn "done compiling"
@@ -185,12 +203,13 @@ compileFile idris file name = do
 
 ||| Given an idris path, a file to compile and a destination for it, compile and
 ||| benchmark the file
-compileAndBenchmarkBinary : (idris, file, name : String) -> Int -> BenchmarkM BenchResults
-compileAndBenchmarkBinary idris file name repetitions =
+compileAndBenchmarkBinary : (idris, file, name : String) -> Bool -> Int -> BenchmarkM BenchResults
+compileAndBenchmarkBinary idris file name isNode repetitions =
   do putStrLn "compile and benchmark"
-     Right () <- compileFile idris file name
+     Right () <- compileFile idris file name isNode
        | Left (MkError err) => returnErr err
-     let program = "build/exec/" ++ name
+     let nodePrefix = if isNode then "node --stack-size=16000 " else ""
+     let program = nodePrefix ++ "build/exec/" ++ name
      Right duration <- doubleTraverse (const $ runTime program) [0..repetitions]
        | Left (MkError err) => returnErr err
      returnVal $ TreeLeaf (file, duration)
@@ -237,7 +256,7 @@ createDir' name = do Right _ <- createDir name
                      putStrLn ("Created directory " ++ name)
                      pure (Right ())
 
-parameters (idrisPath : String, reps: Int)
+parameters (idrisPath : String, reps: Int, isNode : Bool)
   benchmarkTree : Vect n String -> FileSystem -> BenchmarkM BenchResults
   benchmarkTree path t@(TreeNode dirName files) = do
     putStrLn $ "about to traverse directory " ++ dirName
@@ -247,7 +266,7 @@ parameters (idrisPath : String, reps: Int)
   benchmarkTree path (TreeLeaf filename)      = do
     let totalPath = (filename :: path)
     putStrLn $ "benchmarking file : " ++ pathFromVect totalPath
-    compileAndBenchmarkBinary idrisPath (pathFromVect totalPath) (removeFileExension filename ++ "_bin") reps
+    compileAndBenchmarkBinary idrisPath (pathFromVect totalPath) (removeFileExension filename ++ "_bin") isNode reps
 
 cleanupfiles : FileSystem -> FileSystem
 cleanupfiles = filterLeaves isIdr
@@ -256,16 +275,20 @@ cleanupfiles = filterLeaves isIdr
     isIdr x = let extension = dropWhile (/= '.') $ unpack x
                in unpack ".idr" == extension
 
-benchmarkDirectory : (idris, root : String) -> Int -> BenchmarkM BenchResults
-benchmarkDirectory idris root reps = do
+benchmarkDirectory : (idris, root : String) -> Int -> Bool -> BenchmarkM BenchResults
+benchmarkDirectory idris root reps isNode = do
   Right (TreeNode name files) <- lsRec [root]
     | Left _ => returnErr "Filesystem error"
     | Right whut => returnErr ("unexpected value: " ++ show whut)
   putStrLn $ "Here is the tree : " ++ show files
-  Right result <- benchmarkTree idris reps [] ((TreeNode name files))
+  Right result <- benchmarkTree idris reps isNode [] ((TreeNode name files))
     | Left (MkError err) => returnErr err
   print result
   returnVal result
+
+-------------------------------------------------------------------------------------
+-- Options and Parsing                                                             --
+-------------------------------------------------------------------------------------
 
 data TestOutput = StdOut | FilePath String
 
@@ -285,6 +308,26 @@ record IdrisOptions where
   testPath : String -- The directory where the tests are located
   testResults : TestOutput -- The output for this test suite
   testCount : Int -- The number of times a test will be run
+  isNode : Bool -- are we using the node backend ?
+
+parseBin : Parser IdrisBin
+parseBin = [| IdrisCompile (longFlag "compile" String) (longFlag "commit" String) |]
+       <|> map IdrisPath (flag "path" String)
+
+parseOutput : Parser TestOutput
+parseOutput = map (const StdOut) (expect "--stdout") <|> map FilePath (flag "output" String)
+
+commandline : Parser IdrisOptions
+commandline = [| MkOptions
+                    parseBin
+                    (flag "testPath" String)
+                    parseOutput
+                    (flag "count" Int)
+                    (flagCheck "node") |]
+
+parseOptions : List String -> Maybe IdrisOptions
+parseOptions input = parseAll commandline input
+
 
 getIdris2Path : IdrisBin -> BenchmarkM String
 getIdris2Path (IdrisPath path) = returnVal path
@@ -308,20 +351,10 @@ execBenchmarks : IdrisOptions -> BenchmarkM String
 execBenchmarks opts = do
   Right idris2Bin <- getIdris2Path opts.idrisTesting
     | Left err => pure $ Left err
-  Right results <- benchmarkDirectory idris2Bin (opts.testPath) (opts.testCount)
+  Right results <- benchmarkDirectory idris2Bin (opts.testPath) (opts.testCount) (opts.isNode)
     | Left err => pure $ Left err
   returnVal (printCSV $ resultsToCSV results)
 
-parseOptions : List String -> BenchmarkM IdrisOptions
-parseOptions ["-p", idrisPath, "-t", testPath, "-o", fileoutput, "-c", count] =
-  returnVal $ MkOptions (IdrisPath idrisPath) (testPath) (FilePath fileoutput) (cast count)
-parseOptions ["-p", idrisPath, "-t", testPath, "--stdout", "-c", count] =
-  returnVal $ MkOptions (IdrisPath idrisPath) (testPath) (StdOut) (cast count)
-parseOptions ["--compile", compilerFolder, commit, "-t", testPath, "-o", output, "-c", count] =
-  returnVal $ MkOptions (IdrisCompile compilerFolder commit) testPath (FilePath output) (cast count)
-parseOptions ["--compile", compilerFolder, commit, "-t", testPath, "--stdout",  "-c", count] =
-  returnVal $ MkOptions (IdrisCompile compilerFolder commit) testPath (StdOut) (cast count)
-parseOptions _ = returnErr "Wrong options"
 
 outputResults : String -> TestOutput -> IO ()
 outputResults output StdOut = putStrLn output
@@ -355,8 +388,8 @@ outputResults output (FilePath path) = map (const ()) $ writeFile path output
 main : IO ()
 main = do (_ :: xs) <- getArgs
             | _ => putStrLn "expected arguments"
-          Right opts <- parseOptions xs
-            | Left (MkError err) => putStrLn err
+          let Just opts = parseOptions xs
+            | _ => putStrLn "Error parsing arguments"
           Right csv <- execBenchmarks opts
             | Left (MkError err) => putStrLn err
           outputResults csv (opts.testResults)
