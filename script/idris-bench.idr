@@ -65,6 +65,7 @@ runTime programName = do
   putStrLn $ "measuring runtime for program " ++ programName
   measureRunTime' programName (system programName)
 
+||| Uses the real running time from a program using the --
 realRunTime : String -> BenchmarkM (Clock Duration)
 realRunTime programName = do
     putStrLn $ "measuring real run time for program " ++ programName
@@ -210,7 +211,7 @@ compileAndBenchmarkBinary idris file name isNode repetitions =
        | Left (MkError err) => returnErr err
      let nodePrefix = if isNode then "node --stack-size=16000 " else ""
      let program = nodePrefix ++ "build/exec/" ++ name
-     Right duration <- doubleTraverse (const $ runTime program) [0..repetitions]
+     Right duration <- doubleTraverse (const $ realRunTime program) [0..repetitions]
        | Left (MkError err) => returnErr err
      returnVal $ TreeLeaf (file, duration)
 
