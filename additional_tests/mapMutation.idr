@@ -1,9 +1,9 @@
 module Main
 
 %mutating
-mapList :  (1 _ : List a) -> List b
+mapList :  (List Int) -> List Int
 mapList [] = []
-mapList (x :: xs) = x + 1 :: mapList f xs
+mapList (x :: xs) = x + 1 :: mapList xs
 
 main : IO ()
 main = printLn (length (mapList [0 .. 9999]))
