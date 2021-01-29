@@ -46,10 +46,12 @@ convertMaybe = maybeToEither (MkError "unexepect null value")
 
 ||| given a program that runs in IO, measure the time it takes to run
 measureRunTime : Lazy (IO Int) -> IO (Int, Clock Duration)
-measureRunTime program = do begin <- clockTime Process
+measureRunTime program = do begin <- clockTime UTC
                             ret <- program
-                            end <- clockTime Process
-                            pure $ (ret, end `timeDifference` begin)
+                            end <- clockTime UTC
+                            let diff = end `timeDifference` begin
+                            putStrLn ("found diff " ++ show diff)
+                            pure $ (ret, diff)
 
 ||| Run a program and measure the time it takes
 ||| returns Nothing if the exit code was different than 0
@@ -211,7 +213,7 @@ compileAndBenchmarkBinary idris file name isNode repetitions =
        | Left (MkError err) => returnErr err
      let nodePrefix = if isNode then "node --stack-size=16000 " else ""
      let program = nodePrefix ++ "build/exec/" ++ name
-     Right duration <- doubleTraverse (const $ realRunTime program) [0..repetitions]
+     Right duration <- doubleTraverse (const $ runTime program) [0..repetitions]
        | Left (MkError err) => returnErr err
      returnVal $ TreeLeaf (file, duration)
 
